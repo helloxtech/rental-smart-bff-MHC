@@ -1,9 +1,9 @@
 /**
  * @file dataverseClient.ts
- * @description Standardized Dataverse Web API client with Rule 9 compliance.
+ * @description Dataverse Web API client with MSAL client credentials flow.
  */
 
-import { DefaultAzureCredential } from "@azure/identity";
+import { ConfidentialClientApplication, Configuration } from "@azure/msal-node";
 
 /**
  * @class DataverseClient
@@ -12,38 +12,158 @@ import { DefaultAzureCredential } from "@azure/identity";
 export class DataverseClient
 {
     private baseUrl: string;
+    private scope: string;
+    private msalClient: ConfidentialClientApplication;
 
     /**
      * @constructor
-     * @param {string} resourceUrl - The Dataverse environment URL.
+     * @param {string} resourceUrl
+     * @param {string} clientId
+     * @param {string} tenantId
+     * @param {string} clientSecret
      */
-    constructor(resourceUrl: string)
+    constructor(resourceUrl: string, clientId: string, tenantId: string, clientSecret: string)
     {
         this.baseUrl = `${resourceUrl}/api/data/v9.2`;
+        this.scope = `${resourceUrl}/.default`;
+
+        const config: Configuration =
+        {
+            auth:
+            {
+                clientId,
+                authority: `https://login.microsoftonline.com/${tenantId}`,
+                clientSecret
+            }
+        };
+
+        this.msalClient = new ConfidentialClientApplication(config);
+    }
+
+    /**
+     * @function retrieveMultiple
+     * @param {string} entitySet
+     * @param {string} query
+     * @returns {Promise<any>}
+     */
+    public async retrieveMultiple(entitySet: string, query: string = ""): Promise<any>
+    {
+        const path: string = query.length > 0 ? `${entitySet}${query}` : entitySet;
+        return this.request("GET", path);
     }
 
     /**
      * @function retrieve
-     * @description Retrieves a single record from Dataverse.
-     * @param {string} entitySet - The logical collection name (e.g., "hx_lots").
-     * @param {string} id - The GUID of the record.
-     * @returns {Promise<any | null>}
+     * @param {string} entitySet
+     * @param {string} id
+     * @param {string} query
+     * @returns {Promise<any>}
      */
-    public async retrieve(entitySet: string, id: string): Promise<any | null>
+    public async retrieve(entitySet: string, id: string, query: string = ""): Promise<any>
     {
-        try 
+        const suffix: string = query.length > 0 ? query : "";
+        return this.request("GET", `${entitySet}(${id})${suffix}`);
+    }
+
+    /**
+     * @function create
+     * @param {string} entitySet
+     * @param {Record<string, unknown>} payload
+     * @returns {Promise<any>}
+     */
+    public async create(entitySet: string, payload: Record<string, unknown>): Promise<any>
+    {
+        return this.request("POST", entitySet, payload);
+    }
+
+    /**
+     * @function update
+     * @param {string} entitySet
+     * @param {string} id
+     * @param {Record<string, unknown>} payload
+     * @returns {Promise<void>}
+     */
+    public async update(entitySet: string, id: string, payload: Record<string, unknown>): Promise<void>
+    {
+        await this.request("PATCH", `${entitySet}(${id})`, payload);
+    }
+
+    /**
+     * @function delete
+     * @param {string} entitySet
+     * @param {string} id
+     * @returns {Promise<void>}
+     */
+    public async delete(entitySet: string, id: string): Promise<void>
+    {
+        await this.request("DELETE", `${entitySet}(${id})`);
+    }
+
+    /**
+     * @function getToken
+     * @returns {Promise<string>}
+     */
+    private async getToken(): Promise<string>
+    {
+        const result = await this.msalClient.acquireTokenByClientCredential(
+            {
+                scopes: [this.scope]
+            }
+        );
+
+        if (result === null || result.accessToken === undefined || result.accessToken.length === 0)
         {
-            // Implementation would use DefaultAzureCredential for token
-            console.log(`Retrieving ${entitySet} with ID: ${id}`);
-            
-            // Mocking response for Day 3 scaffolding
-            return { id: id, hx_name: "Sample" };
+            throw new Error("Token acquisition failed.");
         }
-        catch (error)
+
+        return result.accessToken;
+    }
+
+    /**
+     * @function request
+     * @param {string} method
+     * @param {string} path
+     * @param {Record<string, unknown>} [payload]
+     * @returns {Promise<any>}
+     */
+    private async request(method: string, path: string, payload?: Record<string, unknown>): Promise<any>
+    {
+        const token: string = await this.getToken();
+        const url: string = `${this.baseUrl}/${path}`;
+
+        const headers: Record<string, string> =
         {
-            // Rule 9: Standardized error logging
-            console.error(`DataverseClient.retrieve failed for ${entitySet}:`, error);
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Prefer: "odata.include-annotations=\"*\""
+        };
+
+        const response: Response = await fetch(url,
+            {
+                method,
+                headers,
+                body: payload !== undefined ? JSON.stringify(payload) : undefined
+            }
+        );
+
+        if (response.status === 204)
+        {
             return null;
         }
+
+        if (response.ok === false)
+        {
+            const text: string = await response.text();
+            throw new Error(`Dataverse request failed (${response.status}): ${text}`);
+        }
+
+        const contentType: string | null = response.headers.get("content-type");
+        if (contentType === null || contentType.includes("application/json") === false)
+        {
+            return null;
+        }
+
+        return response.json();
     }
 }
