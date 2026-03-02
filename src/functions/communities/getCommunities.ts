@@ -44,7 +44,21 @@ function parseNumber(value: string | null, fallback: number): number
 function errorResponse(status: number, code: string, message: string, target: string): HttpResponseInit
 {
     const body: ApiError = { error: { code, message, target } };
-    return { status, jsonBody: body };
+    return { status, jsonBody: body, headers: buildCorsHeaders() };
+}
+
+/**
+ * @function buildCorsHeaders
+ * @returns {Record<string, string>}
+ */
+function buildCorsHeaders(): Record<string, string>
+{
+    const allowedOrigin: string = process.env.CORS_ALLOWED_ORIGIN ?? "https://rental-smart-portal-mhc.pages.dev";
+    return {
+        "Access-Control-Allow-Origin": allowedOrigin,
+        "Access-Control-Allow-Methods": "GET,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type,Authorization"
+    };
 }
 
 /**
@@ -62,7 +76,7 @@ export async function getCommunities(request: HttpRequest, _context: InvocationC
         const skip: number = (page - 1) * pageSize;
 
         const client: DataverseClient = createClient();
-        const query: string = `?$select=hx_communityid,hx_name,hx_state,hx_lotcount&$orderby=hx_name asc&$top=${pageSize}&$skip=${skip}&$count=true`;
+        const query: string = `?$select=hx_communityid,hx_name,hx_address1stateprovince,hx_lotcount&$orderby=hx_name asc&$top=${pageSize}&$skip=${skip}&$count=true`;
         const result: any = await client.retrieveMultiple("hx_communities", query);
 
         const records: any[] = Array.isArray(result?.value) ? result.value : [];
@@ -71,7 +85,7 @@ export async function getCommunities(request: HttpRequest, _context: InvocationC
             ({
                 id: row.hx_communityid,
                 name: row.hx_name ?? "",
-                state: row.hx_state ?? "",
+                state: row.hx_state ?? row.hx_address1stateprovince ?? "",
                 lotCount: Number(row.hx_lotcount ?? 0)
             })
         );
@@ -86,7 +100,7 @@ export async function getCommunities(request: HttpRequest, _context: InvocationC
             hasNextPage: page * pageSize < totalCount
         };
 
-        return { status: 200, jsonBody: response };
+        return { status: 200, jsonBody: response, headers: buildCorsHeaders() };
     }
     catch (error)
     {
