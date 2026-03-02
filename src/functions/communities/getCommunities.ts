@@ -73,10 +73,8 @@ export async function getCommunities(request: HttpRequest, _context: InvocationC
     {
         const page: number = Math.max(1, parseNumber(request.query.get("page"), 1));
         const pageSize: number = Math.max(1, Math.min(100, parseNumber(request.query.get("pageSize"), 20)));
-        const skip: number = (page - 1) * pageSize;
-
         const client: DataverseClient = createClient();
-        const query: string = `?$select=hx_communityid,hx_name,hx_address1stateprovince,hx_lotcount&$orderby=hx_name asc&$top=${pageSize}&$skip=${skip}&$count=true`;
+        const query: string = `?$select=hx_communityid,hx_name,hx_state,hx_address1stateprovince,hx_lotcount&$orderby=hx_name asc&$top=${pageSize}`;
         const result: any = await client.retrieveMultiple("hx_communities", query);
 
         const records: any[] = Array.isArray(result?.value) ? result.value : [];
