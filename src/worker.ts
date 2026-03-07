@@ -93,45 +93,69 @@ router.get('/api/communities/:id/dashboard', async (req, env: Env) => {
     const communityId = req.params.id;
     const supabase = getSupabase(env);
 
-    const { data: kpi } = await supabase
-        .from('dashboard_kpi')
-        .select('*')
-        .eq('community_id', communityId)
-        .single();
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    const ninetyDaysOut = new Date();
+    ninetyDaysOut.setDate(ninetyDaysOut.getDate() + 90);
 
-    const { data: maintenance } = await supabase
-        .from('maintenance_requests')
-        .select('*')
-        .eq('community_id', communityId)
-        .neq('status', 'Completed')
-        .order('created_at', { ascending: false })
-        .limit(5);
+    const [
+        totalLotsResult,
+        occupiedLotsResult,
+        vacantLotsResult,
+        activeResidentsResult,
+        activeLeasesResult,
+        expiringLeasesResult,
+        openMaintenanceResult,
+        openViolationsResult,
+        maintenanceResult,
+        announcementsResult,
+        chargeDataResult,
+    ] = await Promise.all([
+        supabase.from('lots').select('id', { count: 'exact', head: true }).eq('community_id', communityId),
+        supabase.from('lots').select('id', { count: 'exact', head: true }).eq('community_id', communityId).eq('status', 'Occupied'),
+        supabase.from('lots').select('id', { count: 'exact', head: true }).eq('community_id', communityId).eq('status', 'Vacant'),
+        supabase.from('residents').select('id', { count: 'exact', head: true }).eq('community_id', communityId).eq('status', 'Active'),
+        supabase.from('leases').select('monthly_rent, end_date').eq('community_id', communityId).eq('status', 'Active'),
+        supabase.from('leases').select('id', { count: 'exact', head: true }).eq('community_id', communityId).eq('status', 'Active').gte('end_date', new Date().toISOString().slice(0, 10)).lte('end_date', ninetyDaysOut.toISOString().slice(0, 10)),
+        supabase.from('maintenance_requests').select('id', { count: 'exact', head: true }).eq('community_id', communityId).not('status', 'in', '("Completed","Cancelled")'),
+        supabase.from('violations').select('id', { count: 'exact', head: true }).eq('community_id', communityId).not('status', 'in', '("Cured","Closed","Legal")'),
+        supabase.from('maintenance_requests').select('*').eq('community_id', communityId).neq('status', 'Completed').order('created_at', { ascending: false }).limit(5),
+        supabase.from('announcements').select('*').eq('community_id', communityId).eq('status', 'Published').order('publish_date', { ascending: false }).limit(5),
+        supabase.from('charges').select('status, amount').eq('community_id', communityId).gte('due_date', startOfMonth),
+    ]);
 
-    const { data: announcements } = await supabase
-        .from('announcements')
-        .select('*')
-        .eq('community_id', communityId)
-        .eq('status', 'Published')
-        .order('publish_date', { ascending: false })
-        .limit(5);
+    const activeLeases = activeLeasesResult.data || [];
+    const monthlyRevenue = activeLeases.reduce((sum: number, lease: Record<string, unknown>) => sum + Number(lease.monthly_rent || 0), 0);
 
-    const { data: chargeData } = await supabase
-        .from('charges')
-        .select('status, amount')
-        .eq('community_id', communityId)
-        .gte('due_date', new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString());
-
-    let totalCharged = 0, totalCollected = 0;
-    (chargeData || []).forEach((c: Record<string, unknown>) => {
-        totalCharged += Number(c.amount);
-        if (c.status === 'Paid') totalCollected += Number(c.amount);
+    const chargeData = chargeDataResult.data || [];
+    let totalCharged = 0;
+    let totalCollected = 0;
+    chargeData.forEach((charge: Record<string, unknown>) => {
+        totalCharged += Number(charge.amount || 0);
+        if (charge.status === 'Paid') totalCollected += Number(charge.amount || 0);
     });
+
+    const totalLots = totalLotsResult.count || 0;
+    const occupiedLots = occupiedLotsResult.count || 0;
+    const vacantLots = vacantLotsResult.count || 0;
     const collectionRate = totalCharged > 0 ? Math.round((totalCollected / totalCharged) * 100) : 0;
+    const occupancyRate = totalLots > 0 ? Number(((occupiedLots / totalLots) * 100).toFixed(1)) : 0;
 
     return {
-        kpi: kpi ? { ...kpi, collection_rate: collectionRate, monthly_revenue: Number(kpi.monthly_revenue) } : null,
-        recentMaintenance: maintenance || [],
-        recentAnnouncements: announcements || [],
+        kpi: {
+            community_id: communityId,
+            total_lots: totalLots,
+            occupied_lots: occupiedLots,
+            vacant_lots: vacantLots,
+            occupancy_rate: occupancyRate,
+            monthly_revenue: monthlyRevenue,
+            open_maintenance: openMaintenanceResult.count || 0,
+            open_violations: openViolationsResult.count || 0,
+            leases_expiring_soon: expiringLeasesResult.count || 0,
+            total_residents: activeResidentsResult.count || 0,
+            collection_rate: collectionRate,
+        },
+        recentMaintenance: maintenanceResult.data || [],
+        recentAnnouncements: announcementsResult.data || [],
     };
 });
 
@@ -142,7 +166,7 @@ router.get('/api/communities/:id/lots', async (req, env: Env) => {
     const supabase = getSupabase(env);
     const { data, error: err } = await supabase
         .from('lots')
-        .select('*, homes(id, manufacturer, year_manufactured, home_type, bedrooms, bathrooms), residents(id, first_name, last_name, phone)')
+        .select('*, homes(id, manufacturer, model_name, year_manufactured, home_type, bedrooms, bathrooms, sqft, ownership_type, condition), residents(id, first_name, last_name, phone, email, status)')
         .eq('community_id', req.params.id)
         .order('lot_number');
 
@@ -187,7 +211,7 @@ router.get('/api/communities/:id/residents', async (req, env: Env) => {
 
     let query = supabase
         .from('residents')
-        .select('*, lots(lot_number, street_name), leases(id, monthly_rent, start_date, end_date, status)')
+        .select('*, lots(lot_number, street_name), leases(id, monthly_rent, start_date, end_date, status), homes(ownership_type)')
         .eq('community_id', req.params.id)
         .order('last_name');
 
@@ -244,7 +268,7 @@ router.get('/api/communities/:id/homes', async (req, env: Env) => {
     const supabase = getSupabase(env);
     const { data, error: err } = await supabase
         .from('homes')
-        .select('*, lots(lot_number, street_name, status)')
+        .select('*, lots(lot_number, street_name, status, monthly_rent)')
         .eq('community_id', req.params.id)
         .order('created_at', { ascending: false });
 
@@ -550,7 +574,8 @@ router.get('/api/communities/:id/readings', async (req, env: Env) => {
 
     let query = supabase
         .from('utility_readings')
-        .select('*, utility_meters(meter_number, utility_type, unit, rate_per_unit, base_fee, lot_number)')
+        .select('*, utility_meters!inner(community_id, meter_number, utility_type, unit, rate_per_unit, base_fee, lot_number)')
+        .eq('utility_meters.community_id', req.params.id)
         .order('reading_date', { ascending: false })
         .limit(100);
 

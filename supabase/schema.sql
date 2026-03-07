@@ -345,17 +345,109 @@ CREATE TABLE IF NOT EXISTS utility_readings (
 -- ============================================================
 -- 13. DOCUMENTS
 -- ============================================================
+CREATE TABLE IF NOT EXISTS resident_applications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    community_id UUID NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    resident_id UUID REFERENCES residents(id) ON DELETE SET NULL,
+    desired_lot_id UUID REFERENCES lots(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'Submitted' CHECK (status IN ('Draft', 'Submitted', 'Screening', 'Approved', 'Denied', 'Withdrawn', 'Converted')),
+    application_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    decision_date DATE,
+    monthly_income DECIMAL(12, 2),
+    household_size INTEGER,
+    screening_status TEXT DEFAULT 'Pending' CHECK (screening_status IN ('Pending', 'Passed', 'Failed', 'Manual Review')),
+    screening_notes TEXT,
+    denial_reason TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS payment_allocations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    payment_id UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+    charge_id UUID NOT NULL REFERENCES charges(id) ON DELETE CASCADE,
+    allocated_amount DECIMAL(10, 2) NOT NULL,
+    allocation_order INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS resident_notices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    community_id UUID NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    resident_id UUID REFERENCES residents(id) ON DELETE SET NULL,
+    lease_id UUID REFERENCES leases(id) ON DELETE SET NULL,
+    notice_type TEXT NOT NULL CHECK (notice_type IN ('Renewal Offer', 'Non-Renewal', 'Intent to Vacate', 'Lease Violation', 'Pay or Quit', 'Cure or Quit', 'Termination', 'Eviction')),
+    status TEXT NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft', 'Served', 'Acknowledged', 'Resolved', 'Cancelled')),
+    notice_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    effective_date DATE,
+    response_due_date DATE,
+    delivery_method TEXT CHECK (delivery_method IN ('Hand Delivery', 'Mail', 'Email', 'Portal', 'Posting')),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS inspections (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    community_id UUID NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+    lot_id UUID REFERENCES lots(id) ON DELETE SET NULL,
+    home_id UUID REFERENCES homes(id) ON DELETE SET NULL,
+    resident_id UUID REFERENCES residents(id) ON DELETE SET NULL,
+    inspection_type TEXT NOT NULL CHECK (inspection_type IN ('Move-In', 'Move-Out', 'Annual', 'Safety', 'Turn', 'Pre-Sale', 'Rehab')),
+    status TEXT NOT NULL DEFAULT 'Scheduled' CHECK (status IN ('Scheduled', 'In Progress', 'Completed', 'Failed', 'Cancelled')),
+    scheduled_date DATE,
+    completed_date DATE,
+    score DECIMAL(5, 2),
+    inspector_name TEXT,
+    summary TEXT,
+    findings JSONB DEFAULT '[]'::JSONB,
+    photos TEXT[],
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    maintenance_request_id UUID NOT NULL REFERENCES maintenance_requests(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK (event_type IN ('Created', 'Assigned', 'Scheduled', 'Status Changed', 'Note Added', 'Cost Updated', 'Completed', 'Cancelled')),
+    old_status TEXT,
+    new_status TEXT,
+    actor_name TEXT,
+    note TEXT,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS violation_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    violation_id UUID NOT NULL REFERENCES violations(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK (event_type IN ('Observed', 'Notice Sent', 'Status Changed', 'Fine Applied', 'Resident Response', 'Resolved', 'Escalated', 'Closed')),
+    old_status TEXT,
+    new_status TEXT,
+    actor_name TEXT,
+    note TEXT,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     community_id UUID NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
     entity_type TEXT NOT NULL CHECK (entity_type IN ('community', 'lot', 'home', 'resident', 'lease', 'maintenance', 'violation')),
     entity_id UUID NOT NULL,
+    document_category TEXT DEFAULT 'General',
+    version_number INTEGER DEFAULT 1,
     file_name TEXT NOT NULL,
     file_type TEXT,
     file_size INTEGER,
     storage_path TEXT NOT NULL,
     description TEXT,
     uploaded_by TEXT,
+    effective_date DATE,
+    expiry_date DATE,
+    visibility TEXT DEFAULT 'Staff' CHECK (visibility IN ('Public', 'Residents', 'Staff', 'Managers')),
+    is_current BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -417,6 +509,16 @@ CREATE INDEX IF NOT EXISTS idx_announcements_community ON announcements(communit
 CREATE INDEX IF NOT EXISTS idx_utility_meters_community ON utility_meters(community_id);
 CREATE INDEX IF NOT EXISTS idx_utility_meters_lot ON utility_meters(lot_id);
 CREATE INDEX IF NOT EXISTS idx_utility_readings_meter ON utility_readings(utility_meter_id);
+CREATE INDEX IF NOT EXISTS idx_resident_applications_community ON resident_applications(community_id);
+CREATE INDEX IF NOT EXISTS idx_resident_applications_status ON resident_applications(status);
+CREATE INDEX IF NOT EXISTS idx_payment_allocations_payment ON payment_allocations(payment_id);
+CREATE INDEX IF NOT EXISTS idx_payment_allocations_charge ON payment_allocations(charge_id);
+CREATE INDEX IF NOT EXISTS idx_resident_notices_community ON resident_notices(community_id);
+CREATE INDEX IF NOT EXISTS idx_resident_notices_resident ON resident_notices(resident_id);
+CREATE INDEX IF NOT EXISTS idx_inspections_community ON inspections(community_id);
+CREATE INDEX IF NOT EXISTS idx_inspections_status ON inspections(status);
+CREATE INDEX IF NOT EXISTS idx_maintenance_events_request ON maintenance_events(maintenance_request_id);
+CREATE INDEX IF NOT EXISTS idx_violation_events_violation ON violation_events(violation_id);
 CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_community ON audit_log(community_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
@@ -440,7 +542,8 @@ BEGIN
     FOR tbl IN SELECT unnest(ARRAY[
         'communities', 'lots', 'homes', 'residents', 'leases',
         'charges', 'maintenance_requests', 'violations', 'announcements',
-        'utility_meters', 'profiles'
+        'utility_meters', 'profiles', 'resident_applications',
+        'resident_notices', 'inspections'
     ])
     LOOP
         EXECUTE format(
@@ -467,6 +570,12 @@ ALTER TABLE violations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE announcements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE utility_meters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE utility_readings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE resident_applications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE resident_notices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inspections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maintenance_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE violation_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
@@ -479,50 +588,62 @@ ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 -- Supabase automatically grants full access to service_role
 
 -- Anon/public: read-only communities and published announcements
+DROP POLICY IF EXISTS "Public can view active communities" ON communities;
 CREATE POLICY "Public can view active communities" ON communities
     FOR SELECT USING (status = 'Active');
 
+DROP POLICY IF EXISTS "Public can view published announcements" ON announcements;
 CREATE POLICY "Public can view published announcements" ON announcements
     FOR SELECT USING (status = 'Published');
 
 -- Authenticated users: access scoped to their community
+DROP POLICY IF EXISTS "Users view own community lots" ON lots;
 CREATE POLICY "Users view own community lots" ON lots
     FOR SELECT TO authenticated
     USING (community_id IN (SELECT community_id FROM profiles WHERE id = auth.uid()));
 
+DROP POLICY IF EXISTS "Users view own community homes" ON homes;
 CREATE POLICY "Users view own community homes" ON homes
     FOR SELECT TO authenticated
     USING (community_id IN (SELECT community_id FROM profiles WHERE id = auth.uid()));
 
+DROP POLICY IF EXISTS "Users view own profile" ON profiles;
 CREATE POLICY "Users view own profile" ON profiles
     FOR SELECT TO authenticated
     USING (id = auth.uid());
 
+DROP POLICY IF EXISTS "Users update own profile" ON profiles;
 CREATE POLICY "Users update own profile" ON profiles
     FOR UPDATE TO authenticated
     USING (id = auth.uid());
 
 -- Residents: view own data
+DROP POLICY IF EXISTS "Residents view own record" ON residents;
 CREATE POLICY "Residents view own record" ON residents
     FOR SELECT TO authenticated
     USING (auth_user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Residents view own lease" ON leases;
 CREATE POLICY "Residents view own lease" ON leases
     FOR SELECT TO authenticated
     USING (resident_id IN (SELECT id FROM residents WHERE auth_user_id = auth.uid()));
 
+DROP POLICY IF EXISTS "Residents view own charges" ON charges;
 CREATE POLICY "Residents view own charges" ON charges
     FOR SELECT TO authenticated
     USING (resident_id IN (SELECT id FROM residents WHERE auth_user_id = auth.uid()));
 
+DROP POLICY IF EXISTS "Residents view own payments" ON payments;
 CREATE POLICY "Residents view own payments" ON payments
     FOR SELECT TO authenticated
     USING (resident_id IN (SELECT id FROM residents WHERE auth_user_id = auth.uid()));
 
+DROP POLICY IF EXISTS "Residents view own maintenance" ON maintenance_requests;
 CREATE POLICY "Residents view own maintenance" ON maintenance_requests
     FOR SELECT TO authenticated
     USING (resident_id IN (SELECT id FROM residents WHERE auth_user_id = auth.uid()));
 
+DROP POLICY IF EXISTS "Residents can create maintenance" ON maintenance_requests;
 CREATE POLICY "Residents can create maintenance" ON maintenance_requests
     FOR INSERT TO authenticated
     WITH CHECK (resident_id IN (SELECT id FROM residents WHERE auth_user_id = auth.uid()));
@@ -539,25 +660,21 @@ CREATE OR REPLACE VIEW dashboard_kpi AS
 SELECT
     c.id AS community_id,
     c.name AS community_name,
-    COUNT(DISTINCT l.id) AS total_lots,
-    COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'Occupied') AS occupied_lots,
-    COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'Vacant') AS vacant_lots,
+    (SELECT COUNT(*) FROM lots l WHERE l.community_id = c.id) AS total_lots,
+    (SELECT COUNT(*) FROM lots l WHERE l.community_id = c.id AND l.status = 'Occupied') AS occupied_lots,
+    (SELECT COUNT(*) FROM lots l WHERE l.community_id = c.id AND l.status = 'Vacant') AS vacant_lots,
     ROUND(
-        COUNT(DISTINCT l.id) FILTER (WHERE l.status = 'Occupied')::NUMERIC /
-        NULLIF(COUNT(DISTINCT l.id), 0) * 100, 1
+        (
+            (SELECT COUNT(*) FROM lots l WHERE l.community_id = c.id AND l.status = 'Occupied')::NUMERIC /
+            NULLIF((SELECT COUNT(*) FROM lots l WHERE l.community_id = c.id), 0)
+        ) * 100, 1
     ) AS occupancy_rate,
-    COALESCE(SUM(DISTINCT le.monthly_rent) FILTER (WHERE le.status = 'Active'), 0) AS monthly_revenue,
-    COUNT(DISTINCT mr.id) FILTER (WHERE mr.status NOT IN ('Completed', 'Cancelled')) AS open_maintenance,
-    COUNT(DISTINCT v.id) FILTER (WHERE v.status NOT IN ('Cured', 'Legal')) AS open_violations,
-    COUNT(DISTINCT le.id) FILTER (WHERE le.status = 'Active' AND le.end_date BETWEEN NOW() AND NOW() + INTERVAL '90 days') AS leases_expiring_soon,
-    COUNT(DISTINCT r.id) FILTER (WHERE r.status = 'Active') AS total_residents
-FROM communities c
-LEFT JOIN lots l ON l.community_id = c.id
-LEFT JOIN residents r ON r.community_id = c.id
-LEFT JOIN leases le ON le.community_id = c.id
-LEFT JOIN maintenance_requests mr ON mr.community_id = c.id
-LEFT JOIN violations v ON v.community_id = c.id
-GROUP BY c.id, c.name;
+    COALESCE((SELECT SUM(le.monthly_rent) FROM leases le WHERE le.community_id = c.id AND le.status = 'Active'), 0) AS monthly_revenue,
+    (SELECT COUNT(*) FROM maintenance_requests mr WHERE mr.community_id = c.id AND mr.status NOT IN ('Completed', 'Cancelled')) AS open_maintenance,
+    (SELECT COUNT(*) FROM violations v WHERE v.community_id = c.id AND v.status NOT IN ('Cured', 'Legal', 'Closed')) AS open_violations,
+    (SELECT COUNT(*) FROM leases le WHERE le.community_id = c.id AND le.status = 'Active' AND le.end_date BETWEEN NOW() AND NOW() + INTERVAL '90 days') AS leases_expiring_soon,
+    (SELECT COUNT(*) FROM residents r WHERE r.community_id = c.id AND r.status = 'Active') AS total_residents
+FROM communities c;
 
 -- Rent roll view
 CREATE OR REPLACE VIEW rent_roll AS
