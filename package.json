@@ -1,0 +1,35 @@
+{
+  "name": "rental-smart-bff-mhc",
+  "version": "1.0.0",
+  "description": "Rental Smart MHC Backend for Frontend — Cloudflare Worker + Supabase",
+  "main": "src/worker.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:schema": "node supabase/run-schema.mjs",
+    "db:seed": "node supabase/seed.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/helloxtech/rental-smart-bff-MHC.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/helloxtech/rental-smart-bff-MHC/issues"
+  },
+  "homepage": "https://github.com/helloxtech/rental-smart-bff-MHC#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
+    "itty-router": "^5.0.23",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260307.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.71.0"
+  }
+}
